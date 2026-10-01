@@ -44,6 +44,7 @@ import yaml
 from . import templates, util, yaml_util
 from .exceptions import ConfigError, ConfigTypeError, NotFoundError
 from .sources import ConfigSource, EnvSource, YamlSource
+from .templates import TemplateRegistry, as_template
 
 if TYPE_CHECKING:
     import builtins
@@ -295,18 +296,53 @@ class ConfigView:
         return od
 
     @overload
-    def get(self, template: templates.Path) -> Path: ...
+    def get(
+        self,
+        template: templates.Path,
+        *,
+        templates: Mapping[str, object] | None = None,
+    ) -> Path: ...
     @overload
-    def get(self, template: templates.Template[R]) -> R: ...
+    def get(
+        self,
+        template: templates.Template[R],
+        *,
+        templates: Mapping[str, object] | None = None,
+    ) -> R: ...
     @overload
-    def get(self, template: type[R]) -> R: ...
+    def get(
+        self,
+        template: type[R],
+        *,
+        templates: Mapping[str, object] | None = None,
+    ) -> R: ...
     @overload
-    def get(self, template: Mapping[str, object]) -> templates.AttrDict[str, Any]: ...
+    def get(
+        self,
+        template: Mapping[str, object],
+        *,
+        templates: Mapping[str, object] | None = None,
+    ) -> templates.AttrDict[str, Any]: ...
     @overload
-    def get(self, template: list[R]) -> R: ...
+    def get(
+        self,
+        template: list[R],
+        *,
+        templates: Mapping[str, object] | None = None,
+    ) -> R: ...
     @overload
-    def get(self, template: templates._Required = ...) -> Any: ...
-    def get(self, template: object = templates.REQUIRED) -> Any:
+    def get(
+        self,
+        template: templates._Required = ...,
+        *,
+        templates: Mapping[str, object] | None = None,
+    ) -> Any: ...
+    def get(
+        self,
+        template: object = templates.REQUIRED,
+        *,
+        templates: Mapping[str, object] | None = None,
+    ) -> Any:
         """Retrieve the value for this view according to the template.
 
         The `template` against which the values are checked can be
@@ -319,7 +355,10 @@ class ConfigView:
         `ConfigTypeError`) or a `NotFoundError` when the configuration
         doesn't satisfy the template.
         """
-        return templates.as_template(template).value(self, template)
+        resolved_template = as_template(template)
+        registry = self.root().templates
+        with registry.resolution_context(resolved_template, templates):
+            return resolved_template.value(self, template)
 
     # Shortcuts for common templates.
 
@@ -403,13 +442,23 @@ class ConfigView:
         """Get the set of currently-redacted sub-key-paths at this view."""
         raise NotImplementedError()
 
+    def register_template(
+        self, name: str, template: object
+    ) -> None:
+        """Register a named template available to this configuration."""
+        self.root().templates.register(name, template)
+
 
 class RootView(ConfigView):
     """The base of a view hierarchy. This view keeps track of the
     sources that may be accessed by subviews.
     """
 
-    def __init__(self, sources: Iterable[ConfigSource]) -> None:
+    def __init__(
+        self,
+        sources: Iterable[ConfigSource],
+        templates: Mapping[str, object] | None = None,
+    ) -> None:
         """Create a configuration hierarchy for a list of sources. At
         least one source must be provided. The first source in the list
         has the highest priority.
@@ -417,6 +466,7 @@ class RootView(ConfigView):
         self.sources: list[ConfigSource] = list(sources)
         self.name = ROOT_NAME
         self.redactions: set[tuple[ConfigKey, ...]] = set()
+        self.templates = TemplateRegistry(templates)
 
     def add(self, value: Any) -> None:
         self.sources.append(ConfigSource.of(value))
@@ -517,6 +567,7 @@ class Configuration(RootView):
         modname: str | None = None,
         read: bool = True,
         loader: type[yaml_util.Loader] = yaml_util.Loader,
+        templates: Mapping[str, object] | None = None,
     ):
         """Create a configuration object by reading the
         automatically-discovered config files for the application for a
@@ -528,7 +579,7 @@ class Configuration(RootView):
         object at module load time and then call the `read` method
         later. Specify the Loader class as `loader`.
         """
-        super().__init__([])
+        super().__init__([], templates=templates)
         self.appname = appname
         self.modname = modname
         self.loader = loader
@@ -721,8 +772,13 @@ class LazyConfig(Configuration):
     the module level.
     """
 
-    def __init__(self, appname: str, modname: str | None = None) -> None:
-        super().__init__(appname, modname, False)
+    def __init__(
+        self,
+        appname: str,
+        modname: str | None = None,
+        templates: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(appname, modname, False, templates=templates)
         self._materialized = False  # Have we read the files yet?
         self._lazy_prefix: list[
             ConfigSource

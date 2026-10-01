@@ -9,9 +9,12 @@ below!
 Unreleased
 ----------
 
-..
     New features
     ~~~~~~~~~~~~
+
+- Add named templates and forward references for recursive configuration
+  structures, with per-configuration registries and early detection of
+  non-productive template cycles.
 
 ..
     Bug fixes

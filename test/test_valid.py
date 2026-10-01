@@ -1,6 +1,7 @@
 import enum
 import os
 import pathlib
+import re
 import unittest
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -695,3 +696,191 @@ class OptionalTest(unittest.TestCase):
         template = {"bar": confuse.Integer(), "baz": confuse.String()}
         valid = config.get({"foo": confuse.Optional(template, allow_missing=False)})
         assert valid["foo"] is None
+
+
+class NamedTemplateTest(unittest.TestCase):
+    def test_self_referencing_configuration_template(self):
+        config = confuse.Configuration("recursive-template-test", read=False)
+        config.register_template(
+            "node",
+            {
+                "name": str,
+                "children": confuse.Sequence(confuse.TemplateReference("node")),
+            },
+        )
+        config.set(
+            {
+                "name": "root",
+                "children": [
+                    {
+                        "name": "child",
+                        "children": [{"name": "grandchild", "children": []}],
+                    }
+                ],
+            }
+        )
+
+        valid = config.get(confuse.TemplateReference("node"))
+
+        assert valid.name == "root"
+        assert valid.children[0].name == "child"
+        assert valid.children[0].children[0].name == "grandchild"
+
+    def test_embedded_mutually_recursive_templates(self):
+        template = {
+            "tasks": confuse.MappingValues(
+                confuse.NamedTemplate(
+                    "task",
+                    {
+                        "name": str,
+                        "depends": confuse.MappingValues(
+                            confuse.TemplateReference("task")
+                        ),
+                        "milestone": confuse.Optional(
+                            confuse.TemplateReference("milestone")
+                        ),
+                    },
+                )
+            ),
+            "milestones": confuse.MappingValues(
+                confuse.NamedTemplate(
+                    "milestone",
+                    {
+                        "title": str,
+                        "task": confuse.TemplateReference("task"),
+                        "required": confuse.Optional(bool, False),
+                    },
+                )
+            ),
+        }
+        deploy = {
+            "name": "Deploy",
+            "depends": {
+                "build": {
+                    "name": "Build",
+                    "depends": {},
+                    "milestone": None,
+                }
+            },
+        }
+        release = {
+            "title": "Release",
+            "task": {**deploy, "milestone": None},
+        }
+        deploy["milestone"] = release
+        config = _root(
+            {"tasks": {"deploy": deploy}, "milestones": {"release": release}}
+        )
+
+        valid = config.get(template)
+
+        assert valid.tasks["deploy"].depends["build"].name == "Build"
+        assert valid.tasks["deploy"].milestone.title == "Release"
+        assert valid.tasks["deploy"].milestone.task.name == "Deploy"
+        assert valid.milestones["release"].task.name == "Deploy"
+        assert valid.milestones["release"].required is False
+
+    def test_deep_recursive_type_error_keeps_full_key_path(self):
+        node_template = {
+            "name": str,
+            "children": confuse.Sequence(confuse.TemplateReference("node")),
+            "details": confuse.MappingValues(confuse.TemplateReference("detail")),
+        }
+        config = _root(
+            {
+                "name": "root",
+                "children": [
+                    {
+                        "name": "child",
+                        "children": [
+                            {
+                                "name": "grandchild",
+                                "children": [],
+                                "details": {"bad": {"value": "not an int"}},
+                            }
+                        ],
+                    }
+                ],
+                "details": {},
+            }
+        )
+
+        with pytest.raises(
+            confuse.ConfigTypeError,
+            match=re.escape("children#0.children#0.details.bad.value: must be"),
+        ):
+            config.get(
+                confuse.TemplateReference("node"),
+                templates={"node": node_template, "detail": {"value": int}},
+            )
+
+    def test_nonproductive_mutual_reference_cycle_is_detected_early(self):
+        config = confuse.Configuration("recursive-cycle-test", read=False)
+        config.register_template("first", confuse.TemplateReference("second"))
+        config.set({"anything": "goes"})
+
+        with pytest.raises(confuse.ConfigTemplateError, match="circular|cycle"):
+            config.register_template("second", confuse.TemplateReference("first"))
+
+    def test_nonproductive_cycle_is_detected_in_local_templates(self):
+        config = _root({"value": 1})
+
+        with pytest.raises(confuse.ConfigTemplateError, match="circular|cycle"):
+            config.get(
+                confuse.TemplateReference("first"),
+                templates={
+                    "first": confuse.TemplateReference("second"),
+                    "second": confuse.TemplateReference("first"),
+                },
+            )
+
+    def test_templates_with_same_name_are_isolated_between_configurations(self):
+        config_one = confuse.Configuration("named-template-one", read=False)
+        config_two = confuse.Configuration("named-template-two", read=False)
+        config_one.register_template("value", int)
+        config_two.register_template("value", str)
+        config_one.set({"value": 42})
+        config_two.set({"value": "answer"})
+
+        assert config_one["value"].get(confuse.TemplateReference("value")) == 42
+        assert config_two["value"].get(
+            confuse.TemplateReference("value")
+        ) == "answer"
+
+        config_two.set({"value": 42})
+        with pytest.raises(confuse.ConfigTypeError):
+            config_two["value"].get(confuse.TemplateReference("value"))
+
+    def test_initial_templates_are_accepted_by_root_view(self):
+        source = confuse.ConfigSource.of({"node": {"name": "root", "children": []}})
+        node_template = {
+            "name": str,
+            "children": confuse.Sequence(confuse.TemplateReference("node")),
+        }
+        config = confuse.RootView([source], templates={"node": node_template})
+        template = {"node": confuse.TemplateReference("node")}
+
+        valid = config.get(template)
+
+        assert valid.node.name == "root"
+
+    def test_forward_reference_with_optional_default(self):
+        config = _root({})
+
+        valid = config.get(
+            confuse.TemplateReference("node"),
+            templates={
+                "node": {
+                    "value": 7,
+                    "child": confuse.Optional(confuse.TemplateReference("node")),
+                }
+            },
+        )
+
+        assert valid == {"value": 7, "child": None}
+
+    def test_unknown_template_reference_is_template_error(self):
+        config = _root({"value": 1})
+
+        with pytest.raises(confuse.ConfigTemplateError):
+            config.get(confuse.TemplateReference("missing"))

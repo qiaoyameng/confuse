@@ -7,8 +7,17 @@ import re
 import sys
 from collections import abc
 from collections.abc import Hashable, Iterable, Mapping
+from contextlib import contextmanager
 from functools import singledispatchmethod
-from typing import TYPE_CHECKING, Any, Generic, NoReturn, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Iterator,
+    NoReturn,
+    TypeAlias,
+    overload,
+)
 
 if sys.version_info < (3, 13):
     from typing_extensions import TypeVar
@@ -203,6 +212,79 @@ class MappingTemplate(Template[AttrDict[ConfigKeyT, V]]):
 
     def __repr__(self) -> str:
         return f"MappingTemplate({self.subtemplates!r})"
+
+
+class NamedTemplate(Template[T_co]):
+    """A template that is registered under a name for later reference."""
+
+    name: str
+    subtemplate: Template[T_co]
+
+    def __init__(
+        self,
+        name: str,
+        subtemplate: Template[Any] | type[Any] | Mapping[str, object],
+    ) -> None:
+        self.name = name
+        self.subtemplate = as_template(subtemplate)
+
+    @property
+    def default(self) -> T_co | _Required:  # type: ignore[override]
+        return getattr(self.subtemplate, "default", REQUIRED)
+
+    def get_default_value(self, key_name: str = "default") -> T_co:
+        try:
+            return self.subtemplate.get_default_value(key_name)
+        except AttributeError:
+            return super().get_default_value(key_name)
+
+    def value(
+        self, view: ConfigView, template: Template[T_co] | object | None = None
+    ) -> T_co:
+        return self.subtemplate.value(view, self)
+
+    def __repr__(self) -> str:
+        return f"NamedTemplate({self.name!r}, {self.subtemplate!r})"
+
+
+class TemplateReference(Template[T_co]):
+    """A forward reference to a named template."""
+
+    name: str
+
+    def __init__(self, name: str, default: Any = REQUIRED) -> None:
+        super().__init__(default)
+        self.name = name
+
+    def value(
+        self, view: ConfigView, template: Template[T_co] | object | None = None
+    ) -> T_co:
+        registry = getattr(view.root(), "templates", None)
+        if not isinstance(registry, TemplateRegistry):
+            raise exceptions.ConfigTemplateError(
+                f"cannot resolve named template {self.name!r} without a template "
+                "registry"
+            )
+
+        target = registry.resolve(self.name)
+        if self.default is not REQUIRED:
+            try:
+                view.first()
+            except exceptions.NotFoundError:
+                return self.default  # type: ignore[return-value]
+
+        return target.value(view, self)
+
+    def __repr__(self) -> str:
+        args = [repr(self.name)]
+        if self.default is not REQUIRED:
+            args.append(repr(self.default))
+        return f"TemplateReference({', '.join(args)})"
+
+
+Ref = TemplateReference
+TemplateRef = TemplateReference
+Named = NamedTemplate
 
 
 class Sequence(Template[list[T]]):
@@ -850,6 +932,150 @@ class TypeTemplate(Template[T]):
             view,
             True,
         )
+
+
+class _ResolutionContext:
+    def __init__(self, templates: Mapping[str, Template[Any]]) -> None:
+        self.templates = dict(templates)
+
+
+_TemplateInput: TypeAlias = Template[Any] | type[Any] | object
+
+
+class TemplateRegistry:
+    """A collection of named templates owned by a configuration view."""
+
+    def __init__(
+        self, templates: Mapping[str, _TemplateInput] | None = None
+    ) -> None:
+        self.templates: dict[str, Template[Any]] = {}
+        self._resolution_contexts: list[_ResolutionContext] = []
+        if templates is not None:
+            for name, template in templates.items():
+                self.register(name, template)
+
+    def register(self, name: str, template: _TemplateInput) -> None:
+        resolved = as_template(template)
+        self.templates[name] = resolved
+        if not self._resolution_contexts:
+            self._check_zero_width_cycles(resolved)
+
+    def resolve(self, name: str) -> Template[Any]:
+        template = self.resolve_or_none(name)
+        if template is None:
+            raise exceptions.ConfigTemplateError(f"unknown named template {name!r}")
+        return template
+
+    def resolve_or_none(self, name: str) -> Template[Any] | None:
+        for context in reversed(self._resolution_contexts):
+            try:
+                return context.templates[name]
+            except KeyError:
+                pass
+        return self.templates.get(name)
+
+    @contextmanager
+    def resolution_context(
+        self,
+        root_template: Template[Any] | type[Any] | Mapping[str, object] | object,
+        templates: Mapping[str, _TemplateInput] | None = None,
+    ) -> Iterator[None]:
+        root = as_template(root_template)
+        local_templates = {
+            name: as_template(template)
+            for name, template in (templates or {}).items()
+        }
+        explicit_names = set(local_templates)
+        embedded_names: set[str] = set()
+        visited: set[int] = set()
+
+        def collect_named_templates(template: Template[Any]) -> None:
+            template_id = id(template)
+            if template_id in visited or isinstance(template, TemplateReference):
+                return
+            visited.add(template_id)
+
+            if isinstance(template, NamedTemplate):
+                if template.name not in explicit_names:
+                    if template.name in embedded_names:
+                        current = local_templates[template.name]
+                        if current is not template.subtemplate:
+                            raise exceptions.ConfigTemplateError(
+                                f"named template {template.name!r} is defined "
+                                "more than once"
+                            )
+                    else:
+                        embedded_names.add(template.name)
+                        local_templates[template.name] = template.subtemplate
+                collect_named_templates(template.subtemplate)
+
+            for child in declaration_children(template):
+                collect_named_templates(child)
+
+        collect_named_templates(root)
+        for template in local_templates.values():
+            collect_named_templates(template)
+
+        context = _ResolutionContext(local_templates)
+        self._resolution_contexts.append(context)
+        try:
+            for template in local_templates.values():
+                self._check_zero_width_cycles(template)
+            self._check_zero_width_cycles(root)
+            yield
+        finally:
+            self._resolution_contexts.pop()
+
+    def _check_zero_width_cycles(self, root: Template[Any]) -> None:
+        states: dict[int, str] = {}
+
+        def visit(template: Template[Any]) -> None:
+            template_id = id(template)
+            state = states.get(template_id)
+            if state == "active":
+                raise exceptions.ConfigTemplateError(
+                    "circular named template reference does not consume "
+                    "configuration data"
+                )
+            if state == "done":
+                return
+
+            states[template_id] = "active"
+            try:
+                if isinstance(template, TemplateReference):
+                    target = self.resolve_or_none(template.name)
+                    if target is not None:
+                        visit(target)
+                else:
+                    for child in zero_width_children(template):
+                        visit(child)
+            finally:
+                if states.get(template_id) == "active":
+                    states[template_id] = "done"
+
+        visit(root)
+
+
+def declaration_children(template: Template[Any]) -> list[Template[Any]]:
+    if isinstance(template, NamedTemplate):
+        return [template.subtemplate]
+    if isinstance(template, (Sequence, MappingValues, Optional)):
+        return [template.subtemplate]
+    if isinstance(template, MappingTemplate):
+        return list(template.subtemplates.values())
+    if isinstance(template, OneOf):
+        return list(template.allowed)
+    return []
+
+
+def zero_width_children(template: Template[Any]) -> list[Template[Any]]:
+    if isinstance(template, NamedTemplate):
+        return [template.subtemplate]
+    if isinstance(template, Optional):
+        return [template.subtemplate]
+    if isinstance(template, OneOf):
+        return list(template.allowed)
+    return []
 
 
 @overload

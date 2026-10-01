@@ -609,3 +609,48 @@ But this override of the example configuration will validate:
 ...     )
 ... )
 {'fruit': 'banana', 'number': 1}
+
+Named templates
+---------------
+
+Recursive menus, workflows, and tree-shaped tasks need a template that refers
+back to itself. A ``TemplateReference`` can refer to a named template before
+that template is defined, so the recursive Python object does not need to be
+constructed all at once.
+
+Named templates registered on a ``Configuration`` are local to that object:
+two configurations can use the same template name for different types without
+interfering.
+
+>>> import confuse
+>>> config = confuse.Configuration("tree-example", read=False)
+>>> config.register_template(
+...     "node",
+...     {
+...         "name": str,
+...         "children": confuse.Sequence(
+...             confuse.TemplateReference("node")
+...         ),
+...     },
+... )
+>>> config.set(
+...     {
+...         "name": "root",
+...         "children": [
+...             {"name": "child", "children": []},
+...         ],
+...     }
+... )
+>>> config.get(confuse.TemplateReference("node"))
+{'name': 'root', 'children': [{'name': 'child', 'children': []}]}
+
+References can also be supplied to a single ``get`` call or embedded with
+``NamedTemplate``. References work with ``Optional``, ordinary default values,
+``Sequence``, and ``MappingValues``. Validation proceeds only as deeply as the
+actual configuration data, so an error in a nested node still reports that
+node's complete key path.
+
+A reference cycle is allowed when it passes through a data-consuming template
+like ``Sequence`` or ``MappingValues``. Cycles that merely point between named
+templates without consuming another mapping, sequence item, or value are
+invalid and raise ``ConfigTemplateError`` instead of recursing indefinitely.

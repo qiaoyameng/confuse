@@ -9,7 +9,7 @@ import sys
 from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator, Sequence
 
 
 UNIX_DIR_FALLBACK = "~/.config"
@@ -117,6 +117,88 @@ def build_dict(
         else:
             save_to[key] = result
     return output
+
+
+class _UnsetValue(list):
+    """Sentinel used as a temporary argparse default to detect which
+    arguments were actually supplied on the command line.
+
+    It subclasses `list` so that `append`/`extend` actions can copy and
+    add to it; `__copy__` produces a plain list so that a triggered
+    action's value is no longer mistaken for the sentinel. `__add__`
+    supports `count` actions, which increment the (default) value.
+    """
+
+    def __add__(self, other: Any) -> Any:
+        return other
+
+    __radd__ = __add__
+
+    def __copy__(self) -> list[Any]:
+        return list(self)
+
+
+def _iter_parsers(
+    parser: argparse.ArgumentParser,
+) -> Iterator[argparse.ArgumentParser]:
+    """Yield `parser` and, recursively, the parsers of any subcommands
+    registered on it.
+    """
+    seen = set()
+    stack = [parser]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        for action in current._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                stack.extend(action.choices.values())
+
+
+def parse_tracked_args(
+    parser: argparse.ArgumentParser,
+    args: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Parse command-line arguments with an `argparse.ArgumentParser`,
+    returning a dictionary of only those values that were actually
+    supplied on the command line.
+
+    Parser defaults for arguments that did not appear are excluded, so
+    the result can be overlaid onto other configuration sources without
+    clobbering them. An argument explicitly given on the command line is
+    included even when its value equals the parser default; detection
+    never compares values against defaults.
+    """
+    unset = _UnsetValue()
+    saved_defaults: list[tuple[argparse.Action, Any]] = []
+    saved_parser_defaults: list[tuple[argparse.ArgumentParser, dict[str, Any]]] = []
+
+    for subparser in _iter_parsers(parser):
+        for action in subparser._actions:
+            if action.default is not argparse.SUPPRESS:
+                saved_defaults.append((action, action.default))
+                action.default = unset
+        if subparser._defaults:
+            saved_parser_defaults.append((subparser, dict(subparser._defaults)))
+            for key in subparser._defaults:
+                subparser._defaults[key] = unset
+
+    try:
+        namespace = parser.parse_args(args)
+    finally:
+        for action, default in saved_defaults:
+            action.default = default
+        for subparser, defaults in saved_parser_defaults:
+            subparser._defaults.clear()
+            subparser._defaults.update(defaults)
+
+    return {
+        key: value
+        for key, value in vars(namespace).items()
+        if not isinstance(value, _UnsetValue)
+    }
 
 
 # Config file paths, including platform-specific paths and in-package

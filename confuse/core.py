@@ -47,7 +47,7 @@ from .sources import ConfigSource, EnvSource, YamlSource
 
 if TYPE_CHECKING:
     import builtins
-    from argparse import Namespace
+    from argparse import ArgumentParser, Namespace
     from collections.abc import Iterable, Iterator, Mapping, Sequence
     from optparse import Values
     from pathlib import Path
@@ -180,6 +180,34 @@ class ConfigView:
         :type dots: bool
         """
         self.set(util.build_dict(namespace, sep="." if dots else ""))
+
+    def set_argparse(
+        self,
+        parser: ArgumentParser,
+        args: Sequence[str] | None = None,
+        dots: bool = False,
+    ) -> None:
+        """Parse command-line arguments with an `argparse.ArgumentParser`
+        and overlay only the arguments actually supplied on the command
+        line onto this view's value.
+
+        Unlike `set_args`, parser defaults for arguments that did not
+        appear on the command line are excluded from the overlay, so
+        they do not clobber values from lower-priority sources such as
+        configuration files. An argument explicitly given on the command
+        line is always overlaid, even when its value equals the parser
+        default. Supports all standard actions (including
+        store_true/store_false, append, and count), mutually exclusive
+        groups, and subcommands.
+
+        :param parser: The `argparse.ArgumentParser` to parse with.
+        :param args: The argument strings to parse. Defaults to
+            `sys.argv[1:]`, as with `ArgumentParser.parse_args`.
+        :param dots: If True, argument destinations containing dots (.)
+            will be broken down into child dictionaries.
+        """
+        values = util.parse_tracked_args(parser, args)
+        self.set(util.build_dict(values, sep="." if dots else ""))
 
     # Magical conversions. These special methods make it possible to use
     # View objects somewhat transparently in certain circumstances. For

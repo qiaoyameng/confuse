@@ -9,6 +9,16 @@ below!
 Unreleased
 ----------
 
+New features
+~~~~~~~~~~~~
+
+- Add a ``Quantity`` template for values with units (such as ``500ms`` or
+  ``64MiB``). The caller declares a dimension (``time``, ``bytes``, or a
+  custom unit mapping), a target unit, and a rounding rule. Arithmetic is
+  exact (``fractions.Fraction``, never floats), compound multiply/divide
+  expressions only accept whitelisted units and numbers without ``eval``,
+  and defaults and bounds go through the same dimensional validation.
+
 ..
     New features
     ~~~~~~~~~~~~

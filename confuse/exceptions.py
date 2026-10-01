@@ -2,10 +2,13 @@ from yaml.scanner import ScannerError
 
 __all__ = [
     "ConfigError",
+    "ConfigMigrationError",
     "ConfigReadError",
     "ConfigTemplateError",
     "ConfigTypeError",
     "ConfigValueError",
+    "MigrationConflictError",
+    "MissingMigrationError",
     "NotFoundError",
 ]
 
@@ -57,3 +60,15 @@ class ConfigReadError(ConfigError):
             message += f": {reason}"
 
         super().__init__(message)
+
+
+class ConfigMigrationError(ConfigError):
+    """A configuration migration could not be planned or applied."""
+
+
+class MigrationConflictError(ConfigMigrationError):
+    """A migration encountered old and new values at the same time."""
+
+
+class MissingMigrationError(ConfigMigrationError):
+    """A migration rule needed to reach a version is unavailable."""

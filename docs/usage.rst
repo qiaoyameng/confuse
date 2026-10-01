@@ -363,6 +363,63 @@ also allows changing how relative paths in the file will be resolved:
 
     val = config["foo"]["bar"].get(int)
 
+Configuration Version Migrations
+------------------------------------
+
+Applications can define explicit migrations for older configuration files.
+Migrations are limited to moving paths, deleting paths, and transforming
+values with converters registered by the application. Confuse never executes
+code supplied by configuration itself.
+
+Create a migrator, register named value converters, and register the rules
+for each configuration version:
+
+.. code-block:: python
+
+    import confuse
+
+    migrations = confuse.ConfigMigrator()
+
+    @migrations.register_converter("seconds_with_unit")
+    def seconds_with_unit(value):
+        return f"{value}s"
+
+    migrations.register(
+        1,
+        move=[
+            confuse.MoveRule(
+                ("server", "port"),
+                ("http", "listen", "port"),
+            ),
+            confuse.MoveRule(
+                ("server", "timeout"),
+                ("http", "timeout"),
+                "seconds_with_unit",
+            ),
+        ],
+    )
+
+Planning is separate from application. Choose exactly one source so defaults,
+environment variables, and other layers remain independent:
+
+.. code-block:: python
+
+    source = config.sources[0]
+    plan = migrations.plan(source)
+    for change in plan.changes:
+        print(change.operation, change.old, change.new)
+
+    # Apply after the caller has accepted the planned old/new values.
+    plan.apply()
+
+If both the old and new paths contain values, planning raises
+``MigrationConflictError`` instead of guessing which value wins. If a rule for
+an intermediate version is missing, planning raises ``MissingMigrationError``
+and names the breakpoint. File-backed sources are written through a temporary
+file and replaced atomically, so a failed application leaves the original
+configuration in place. Loading a source that is already at the requested
+version produces an empty, idempotent plan.
+
 Your Application Directory
 --------------------------
 

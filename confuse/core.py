@@ -24,6 +24,11 @@ __all__ = [
     "ConfigView",
     "Configuration",
     "LazyConfig",
+    "ConfigMigrator",
+    "MigrationChange",
+    "MigrationPlan",
+    "MISSING",
+    "MoveRule",
     "RootView",
     "Subview",
 ]
@@ -43,6 +48,13 @@ import yaml
 
 from . import templates, util, yaml_util
 from .exceptions import ConfigError, ConfigTypeError, NotFoundError
+from .migration import (
+    ConfigMigrator,
+    MigrationChange,
+    MigrationPlan,
+    MISSING,
+    MoveRule,
+)
 from .sources import ConfigSource, EnvSource, YamlSource
 
 if TYPE_CHECKING:
@@ -713,6 +725,39 @@ class Configuration(RootView):
         for source in self.sources:
             if isinstance(source, YamlSource):
                 source.load()
+
+    def migration_plan(
+        self,
+        migrator: ConfigMigrator,
+        source: ConfigSource | int | str,
+        target_version: int | None = None,
+    ) -> MigrationPlan:
+        """Create a migration plan for one explicit configuration source."""
+        if isinstance(source, ConfigSource):
+            selected = source
+        elif isinstance(source, int) and not isinstance(source, bool):
+            try:
+                selected = self.sources[source]
+            except IndexError:
+                raise ConfigError(f"no configuration source at index {source}")
+        elif isinstance(source, str):
+            filename = os.path.abspath(source)
+            matches = [
+                candidate
+                for candidate in self.sources
+                if getattr(candidate, "filename", None) == filename
+            ]
+            if len(matches) > 1:
+                raise ConfigError(f"multiple configuration sources match {filename}")
+            if not matches:
+                raise ConfigError(f"no configuration source matches {filename}")
+            selected = matches[0]
+        else:
+            raise ConfigError(
+                "migration source must be a ConfigSource, index, or filename"
+            )
+
+        return migrator.plan(selected, target_version)
 
 
 class LazyConfig(Configuration):

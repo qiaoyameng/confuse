@@ -9,9 +9,13 @@ below!
 Unreleased
 ----------
 
-..
-    New features
-    ~~~~~~~~~~~~
+New features
+~~~~~~~~~~~~
+
+- Add explicit configuration version migrations with registered path moves,
+  deletions, and value converters. Migration plans expose old and new values
+  before being applied to a specifically selected source.
+
 
 ..
     Bug fixes

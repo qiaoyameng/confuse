@@ -45,6 +45,14 @@ Utility
     :private-members:
     :show-inheritance:
 
+Migrations
+----------
+
+.. automodule:: confuse.migrations
+    :members:
+    :private-members:
+    :show-inheritance:
+
 YAML Utility
 ------------
 

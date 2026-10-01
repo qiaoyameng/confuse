@@ -2,6 +2,7 @@
 
 from .core import *  # noqa: F403
 from .exceptions import *  # noqa: F403
+from .migrations import *  # noqa: F403
 from .sources import *  # noqa: F403
 from .templates import *  # noqa: F403
 from .templates import Path as Path

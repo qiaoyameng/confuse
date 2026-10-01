@@ -6,6 +6,9 @@ __all__ = [
     "ConfigTemplateError",
     "ConfigTypeError",
     "ConfigValueError",
+    "MigrationConflictError",
+    "MigrationError",
+    "MigrationGapError",
     "NotFoundError",
 ]
 
@@ -32,6 +35,22 @@ class ConfigTypeError(ConfigValueError):
 
 class ConfigTemplateError(ConfigError):
     """Base class for exceptions raised because of an invalid template."""
+
+
+class MigrationError(ConfigError):
+    """A configuration migration could not be planned or applied."""
+
+
+class MigrationConflictError(MigrationError):
+    """Both the old and the new location of a migrated setting exist.
+
+    The migrator refuses to guess which value should win; the conflict
+    must be resolved manually.
+    """
+
+
+class MigrationGapError(MigrationError):
+    """Migration rules for an intermediate version are missing."""
 
 
 class ConfigReadError(ConfigError):

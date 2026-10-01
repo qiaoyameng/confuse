@@ -148,49 +148,55 @@ configuration options. Just as options in a user-specific configuration file
 should override those from a system-wide config, command-line options should
 take priority over all configuration files.
 
-You can use the argparse_ and optparse_ modules from the standard library with
-Confuse to accomplish this. Just call the ``set_args`` method on any view and
-pass in the object returned by the command-line parsing library. Values from the
-command-line option namespace object will be added to the overlay for the view
-in question. For example, with argparse:
+With argparse_, call ``set_argparse_args`` with the parser and the command-line
+arguments. Confuse parses them and adds explicitly supplied options to the
+overlay. For example:
 
 .. code-block:: python
 
-    args = parser.parse_args()
-    config.set_args(args)
+    args = config.set_argparse_args(parser, argv)
 
-Correspondingly, with optparse:
+With optparse_, parse the command line yourself and pass the resulting object
+to the legacy ``set_args`` method:
 
 .. code-block:: python
 
     options, args = parser.parse_args()
     config.set_args(options)
 
-This call will turn all of the command-line options into a top-level source in
-your configuration. The key associated with each option in the parser will
-become a key available in your configuration. For example, consider this
-argparse script:
+This call parses the command line and turns only options actually supplied by
+the user into a top-level source in your configuration. Defaults defined by
+argparse do not hide values from your configuration files. The key associated
+with each option in the parser will become a key available in your
+configuration. For example, consider this argparse script:
 
 .. code-block:: python
 
     config = confuse.Configuration("myapp")
     parser = argparse.ArgumentParser()
     parser.add_argument("--foo", help="a parameter")
-    args = parser.parse_args()
-    config.set_args(args)
+    args = config.set_argparse_args(parser)
     print(config["foo"].get())
 
 This will allow the user to override the configured value for key ``foo`` by
 passing ``--foo <something>`` on the command line.
 
-Overriding nested values can be accomplished by passing ``dots=True`` and have
-dot-delimited properties on the incoming object.
+The value supplied on the command line is overlaid even when it is equal to
+the parser default, so Confuse does not compare values with their defaults.
+``store_true`` and ``store_false``, ``append``, and ``count`` actions are
+supported, as are mutually exclusive groups and subcommands.
+
+The legacy ``set_args`` method remains useful for optparse and for dictionaries
+or namespaces that have already been constructed. It overlays every attribute
+on the namespace, so argparse defaults should normally be omitted when using it.
+
+Overriding nested values can be accomplished by passing ``dots=True`` when
+options use dot-delimited destinations.
 
 .. code-block:: python
 
     parser.add_argument("--bar", help="nested parameter", dest="foo.bar")
-    args = parser.parse_args()  # args looks like: {'foo.bar': 'value'}
-    config.set_args(args, dots=True)
+    args = config.set_argparse_args(parser, argv, dots=True)
     print(config["foo"]["bar"].get())
 
 ``set_args`` works with generic dictionaries too.
@@ -207,12 +213,11 @@ dot-delimited properties on the incoming object.
 
 .. _parse_args: https://docs.python.org/library/argparse.html#the-parse-args-method
 
-Note that, while you can use the full power of your favorite command-line
-parsing library, you'll probably want to avoid specifying defaults in your
-argparse or optparse setup. This way, Confuse can use other configuration
-sources---possibly your ``config_default.yaml``---to fill in values for
-unspecified command-line switches. Otherwise, the argparse/optparse default
-value will hide options configured elsewhere.
+When using the legacy ``set_args`` interface with optparse, you'll probably
+want to avoid specifying parser defaults. This way, Confuse can use other
+configuration sources---possibly your ``config_default.yaml``---to fill in
+values for unspecified command-line switches. Otherwise, the parser default
+will hide options configured elsewhere.
 
 .. _environment-variables:
 

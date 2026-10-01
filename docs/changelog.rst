@@ -9,9 +9,12 @@ below!
 Unreleased
 ----------
 
-..
-    New features
-    ~~~~~~~~~~~~
+New features
+~~~~~~~~~~~~
+
+- Add ``ConfigView.set_argparse_args`` to overlay only command-line arguments
+  that argparse actually parses, including boolean, append, count, mutually
+  exclusive group, and subcommand options.
 
 ..
     Bug fixes

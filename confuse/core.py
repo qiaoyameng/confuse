@@ -47,6 +47,7 @@ from .sources import ConfigSource, EnvSource, YamlSource
 
 if TYPE_CHECKING:
     import builtins
+    from argparse import ArgumentParser
     from argparse import Namespace
     from collections.abc import Iterable, Iterator, Mapping, Sequence
     from optparse import Values
@@ -180,6 +181,38 @@ class ConfigView:
         :type dots: bool
         """
         self.set(util.build_dict(namespace, sep="." if dots else ""))
+
+    def set_argparse_args(
+        self,
+        parser: ArgumentParser,
+        args: Sequence[str] | None = None,
+        namespace: Namespace | None = None,
+        dots: bool = False,
+    ) -> Namespace:
+        """Parse argparse arguments and overlay only explicitly supplied ones.
+
+        Unlike ``set_args``, parser defaults that are not represented on the
+        command line are omitted, so values from lower-priority configuration
+        sources remain visible. Values that are identical to a parser default
+        are still overlaid when the corresponding option is supplied.
+
+        :param parser: The argparse parser describing the command-line options.
+        :param args: Command-line arguments. Defaults to ``sys.argv``.
+        :param namespace: Namespace to populate during parsing.
+        :param dots: Expand dot-delimited destinations into nested views.
+        :return: The namespace returned by argparse.
+        """
+        parsed_namespace, explicit_args = util.parse_argparse_args(
+            parser, args, namespace
+        )
+        self.set(
+            util.build_dict(
+                explicit_args,
+                sep="." if dots else "",
+                keep_none=True,
+            )
+        )
+        return parsed_namespace
 
     # Magical conversions. These special methods make it possible to use
     # View objects somewhat transparently in certain circumstances. For

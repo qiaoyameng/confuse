@@ -9,7 +9,7 @@ import sys
 from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable, Sequence
 
 
 UNIX_DIR_FALLBACK = "~/.config"
@@ -18,6 +18,66 @@ WINDOWS_DIR_FALLBACK = "~\\AppData\\Roaming"
 MAC_DIR = "~/Library/Application Support"
 
 T = TypeVar("T")
+
+
+def parse_argparse_args(
+    parser: argparse.ArgumentParser,
+    args: Sequence[str] | None = None,
+    namespace: argparse.Namespace | None = None,
+) -> tuple[argparse.Namespace, dict[str, Any]]:
+    """Parse argparse arguments and return explicitly supplied destinations.
+
+    Destinations are recorded from argparse actions that consume command-line
+    input, not by comparing namespace values with parser defaults.
+    """
+    seen_actions: set[argparse.Action] = set()
+    installed_parsers: set[argparse.ArgumentParser] = set()
+    patched_parsers: list[
+        tuple[argparse.ArgumentParser, Callable[..., Any]]
+    ] = []
+
+    def install_hook(
+        target_parser: argparse.ArgumentParser,
+    ) -> None:
+        if target_parser in installed_parsers:
+            return
+        installed_parsers.add(target_parser)
+
+        original_get_values = target_parser._get_values
+
+        def get_values(
+            action: argparse.Action,
+            argument_strings: list[str],
+        ) -> Any:
+            if action.option_strings or argument_strings:
+                seen_actions.add(action)
+            return original_get_values(action, argument_strings)
+
+        setattr(target_parser, "_get_values", get_values)
+        patched_parsers.append((target_parser, original_get_values))
+
+        for action in target_parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for subparser in action.choices.values():
+                    if isinstance(subparser, argparse.ArgumentParser):
+                        install_hook(subparser)
+
+    install_hook(parser)
+    try:
+        parsed_namespace = parser.parse_args(args, namespace)
+    finally:
+        for target_parser, original_get_values in patched_parsers:
+            setattr(target_parser, "_get_values", original_get_values)
+
+    explicit_args: dict[str, Any] = {}
+    for action in seen_actions:
+        if action.dest is argparse.SUPPRESS or not hasattr(
+            parsed_namespace, action.dest
+        ):
+            continue
+        explicit_args[action.dest] = getattr(parsed_namespace, action.dest)
+
+    return parsed_namespace, explicit_args
 
 
 def iter_first(sequence: Iterable[T]) -> T:

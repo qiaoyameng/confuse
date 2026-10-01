@@ -6,6 +6,8 @@ __all__ = [
     "ConfigTemplateError",
     "ConfigTypeError",
     "ConfigValueError",
+    "EditConflictError",
+    "EditWriteError",
     "NotFoundError",
 ]
 
@@ -56,4 +58,32 @@ class ConfigReadError(ConfigError):
             # Generic error message uses exception's message.
             message += f": {reason}"
 
+        super().__init__(message)
+
+
+class EditConflictError(ConfigError):
+    """The writable YAML file changed on disk while an edit session was
+    open, so saving the session's edits could overwrite a concurrent
+    modification.
+
+    The target file is left untouched. To resolve the conflict, start a
+    new edit session (re-reading the current file) and reapply the
+    intended edits.
+    """
+
+
+class EditWriteError(ConfigError):
+    """The writable YAML file could not be written atomically.
+
+    The original file is guaranteed to remain in place; no partial
+    output is left behind.
+    """
+
+    def __init__(self, name: str, reason: Exception | None = None) -> None:
+        self.name = name
+        self.reason = reason
+
+        message = f"{name} could not be written"
+        if reason:
+            message += f": {reason}"
         super().__init__(message)

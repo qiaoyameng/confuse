@@ -519,3 +519,46 @@ Then flatten or dump the configuration like so:
     config.dump(redact=True)
 
 The resulting YAML will contain "key: REDACTED" instead of the original data.
+
+Edit Sessions
+-------------
+
+``Configuration.dump()`` renders the *merged* view of every source, so saving
+its output into the user file would copy defaults and environment values into
+that file. For an editing UI, use :class:`confuse.EditSession` instead: it
+targets a single writable YAML source (by default, the user configuration
+file), stages explicit ``set``/``delete`` operations, and saves only those
+paths.
+
+.. code-block:: python
+
+    with confuse.edit_session(config) as session:
+        outcome = session.set("retries", 9)
+        if outcome.shadowed:
+            print(session.explain_shadow("retries"))
+        session.delete("theme")  # reveals the default underneath
+        report = session.save()
+
+Properties of an edit session:
+
+- Values are layered in the usual order (environment variables first, then
+  the user file, then defaults). ``session.effective(path)`` reports the value
+  that actually applies, including the edits staged so far, together with the
+  source that provides it.
+- When a path is masked by a higher-priority source (for example, an
+  environment variable), the outcome's ``shadowed`` flag is set and
+  ``explain_shadow`` returns a human-readable warning. The value is still
+  written to the target file; it simply does not take effect until the
+  overriding source goes away.
+- ``delete`` removes the path from the targeted layer only. The outcome's
+  ``revealed`` attribute gives the value that shows through from a lower
+  layer (or ``confuse.MISSING``).
+- Saving first checks that the target file has not changed since the session
+  began. A concurrent modification raises
+  :class:`confuse.EditConflictError` without touching the file.
+- Writes are atomic; on failure :class:`confuse.EditWriteError` is raised and
+  the original file is left in place.
+- Leaving the ``with`` block (or calling ``close``) discards unsaved edits.
+
+A runnable demonstration using all three layers lives at
+``example/edit_session_demo.py``.

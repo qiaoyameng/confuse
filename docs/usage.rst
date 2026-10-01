@@ -138,6 +138,43 @@ filename string from the configuration. And calling
 ``config['direction'].as_choice(['up', 'down'])`` will raise a
 ``ConfigValueError`` unless the ``direction`` value is either "up" or "down".
 
+.. _quantity-template:
+
+Quantities with Units
+~~~~~~~~~~~~~~~~~~~~~
+
+Configuration files often contain bare strings like ``500ms``, ``1.5s``,
+``64MiB``, or ``2MB`` whose units are easy to get wrong. The ``Quantity``
+template lets you declare the *dimension* (``"time"`` or ``"data"``, or a
+custom ``Dimension``), the *target unit* the value should be returned in, and
+a *rounding rule*:
+
+.. code-block:: python
+
+    config['timeout'].get(confuse.Quantity('time', 'ms'))      # "1.5s" -> 1500
+    config['pool_size'].get(confuse.Quantity('data', 'MiB'))   # "64MiB" -> 64
+
+Conversions use exact rational arithmetic, never floats, so ``"0.1s"`` is
+precisely 100 milliseconds. Decimal (SI) and binary (IEC) capacities are
+distinct units: ``"64MB"`` is 64,000,000 bytes while ``"64MiB"`` is
+67,108,864 bytes.
+
+Compound expressions may multiply and divide whitelisted units and decimal
+numbers---``"3 / 2 s"`` or ``"1 GB / 4"``---and are evaluated by a small
+parser, not ``eval``. A unit from the wrong dimension (say, ``"5s"`` for a
+capacity) is rejected, as are negative values unless ``allow_negative=True``.
+
+When a value does not convert to a whole number of the target unit, the
+default ``rounding="exact"`` rule raises an error; ``"floor"``, ``"ceil"``,
+and ``"nearest"`` round instead. The ``default``, ``minimum``, and ``maximum``
+arguments accept the same quantity strings and are validated against the same
+dimension:
+
+.. code-block:: python
+
+    confuse.Quantity('time', 'ms', default='1.5s',
+                     minimum='100ms', maximum='2s')
+
 .. _command-line-options:
 
 Command-Line Options

@@ -7,6 +7,7 @@ import re
 import sys
 from collections import abc
 from collections.abc import Hashable, Iterable, Mapping
+from fractions import Fraction
 from functools import singledispatchmethod
 from typing import TYPE_CHECKING, Any, Generic, NoReturn, overload
 
@@ -172,6 +173,345 @@ class Number(Template[Numeric]):
             return value
         else:
             self.fail(f"must be numeric, not {type(value).__name__}", view, True)
+
+
+class Dimension:
+    """A physical dimension: a named collection of units with exact
+    conversion factors relative to a common base unit.
+
+    Each entry in `units` maps a unit name to the exact number of base
+    units it represents. For example, a time dimension might use
+    nanoseconds as its base unit and map ``"ms"`` to ``10**6``.
+    Factors are stored as `fractions.Fraction`, so conversions never
+    lose precision to floating-point rounding.
+    """
+
+    def __init__(self, name: str, units: Mapping[str, int | Fraction]) -> None:
+        if not units:
+            raise exceptions.ConfigTemplateError(
+                f"dimension {name!r} must define at least one unit"
+            )
+        self.name = name
+        self.units = {unit: Fraction(factor) for unit, factor in units.items()}
+
+    def __repr__(self) -> str:
+        return f"Dimension({self.name!r}, {self.units!r})"
+
+
+#: Built-in dimensions available to `Quantity` by name.
+_BUILTIN_DIMENSIONS: dict[str, Dimension] = {
+    "time": Dimension(
+        "time",
+        {
+            "ns": 1,
+            "us": 10**3,
+            "µs": 10**3,  # U+00B5 micro sign
+            "μs": 10**3,  # U+03BC greek small letter mu
+            "ms": 10**6,
+            "s": 10**9,
+            "sec": 10**9,
+            "m": 60 * 10**9,
+            "min": 60 * 10**9,
+            "h": 3600 * 10**9,
+            "hr": 3600 * 10**9,
+            "d": 86400 * 10**9,
+        },
+    ),
+    "data": Dimension(
+        "data",
+        {
+            "B": 1,
+            # Decimal (SI) capacities: powers of 1000.
+            "kB": 1000,
+            "KB": 1000,
+            "MB": 1000**2,
+            "GB": 1000**3,
+            "TB": 1000**4,
+            "PB": 1000**5,
+            # Binary (IEC) capacities: powers of 1024.
+            "KiB": 1024,
+            "MiB": 1024**2,
+            "GiB": 1024**3,
+            "TiB": 1024**4,
+            "PiB": 1024**5,
+        },
+    ),
+}
+
+#: Tokenizer for quantity expressions: decimal numbers, unit names, and
+#: the ``*`` and ``/`` operators. Nothing else is ever evaluated.
+_QUANTITY_TOKEN = re.compile(
+    r"\s*(?:(?P<number>\d+(?:\.\d*)?|\.\d+)|(?P<unit>[A-Za-zµμ]+)|(?P<op>[*/]))"
+)
+
+_ROUNDING_RULES = ("exact", "floor", "ceil", "nearest")
+
+
+class Quantity(Template[int]):
+    """A template for physical quantities with units, such as durations
+    (``"500ms"``, ``"1.5s"``) or capacities (``"64MiB"``, ``"2MB"``).
+
+    Values are parsed with exact arithmetic (`fractions.Fraction`)—never
+    floats—so ``"0.1s"`` is precisely 100 milliseconds. Compound
+    expressions may multiply and divide whitelisted units and decimal
+    numbers (e.g. ``"3 / 2 s"`` or ``"1 GB / 4"``); they are evaluated by
+    a small parser, not ``eval``.
+    """
+
+    #: Built-in time dimension (base unit: nanoseconds).
+    TIME = _BUILTIN_DIMENSIONS["time"]
+    #: Built-in data capacity dimension (base unit: bytes).
+    DATA = _BUILTIN_DIMENSIONS["data"]
+
+    def __init__(
+        self,
+        dimension: str | Dimension,
+        unit: str,
+        default: int | float | str | _Required = REQUIRED,
+        rounding: str = "exact",
+        allow_negative: bool = False,
+        minimum: int | float | str | None = None,
+        maximum: int | float | str | None = None,
+    ) -> None:
+        """Create a quantity template.
+
+        `dimension` selects the unit system: the name of a built-in
+        dimension (``"time"`` or ``"data"``) or a custom `Dimension`.
+        `unit` is the target unit that converted values are expressed
+        (and returned) in.
+
+        `rounding` controls how values that do not convert to a whole
+        number of the target unit are handled: ``"exact"`` (the default)
+        rejects them, while ``"floor"``, ``"ceil"``, and ``"nearest"``
+        (ties away from zero) round to an integer.
+
+        `allow_negative` permits negative quantities, which are rejected
+        by default. `minimum` and `maximum` are optional inclusive
+        bounds; like `default`, they may be numbers (interpreted in the
+        target unit) or quantity strings, and are validated against the
+        same dimension as configuration values.
+        """
+        super().__init__(default)
+        if isinstance(dimension, str):
+            try:
+                dimension = _BUILTIN_DIMENSIONS[dimension]
+            except KeyError:
+                raise exceptions.ConfigTemplateError(
+                    f"unknown dimension {dimension!r}; expected one of "
+                    f"{sorted(_BUILTIN_DIMENSIONS)} or a Dimension"
+                )
+        self.dimension = dimension
+        if unit not in dimension.units:
+            raise exceptions.ConfigTemplateError(
+                f"unknown target unit {unit!r} for dimension {dimension.name!r}"
+            )
+        self.unit = unit
+        if rounding not in _ROUNDING_RULES:
+            raise exceptions.ConfigTemplateError(
+                f"unknown rounding rule {rounding!r}; "
+                f"expected one of {list(_ROUNDING_RULES)}"
+            )
+        self.rounding = rounding
+        self.allow_negative = allow_negative
+        self.minimum = self._parse_bound(minimum, "minimum")
+        self.maximum = self._parse_bound(maximum, "maximum")
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
+            raise exceptions.ConfigTemplateError(
+                f"minimum {minimum!r} exceeds maximum {maximum!r}"
+            )
+
+    def __repr__(self) -> str:
+        args = [repr(self.dimension.name), repr(self.unit)]
+        if self.default is not REQUIRED:
+            args.append(repr(self.default))
+        if self.rounding != "exact":
+            args.append(f"rounding={self.rounding!r}")
+        if self.allow_negative:
+            args.append("allow_negative=True")
+        return f"Quantity({', '.join(args)})"
+
+    def _parse_bound(
+        self, bound: int | float | str | None, name: str
+    ) -> Fraction | None:
+        """Parse a `minimum`/`maximum` bound in target units."""
+        if bound is None:
+            return None
+        try:
+            return self._to_target_fraction(bound)
+        except (TypeError, ValueError) as exc:
+            raise exceptions.ConfigTemplateError(f"invalid {name}: {exc}")
+
+    def _lookup_unit(self, unit: str) -> Fraction:
+        """Return the base-unit factor for `unit` in this dimension."""
+        try:
+            return self.dimension.units[unit]
+        except KeyError:
+            for dim in _BUILTIN_DIMENSIONS.values():
+                if dim is not self.dimension and unit in dim.units:
+                    raise ValueError(
+                        f"unit {unit!r} belongs to the {dim.name!r} dimension, "
+                        f"not {self.dimension.name!r}"
+                    )
+            raise ValueError(
+                f"unknown unit {unit!r} for dimension {self.dimension.name!r}"
+            )
+
+    def _parse_expression(self, text: str) -> Fraction:
+        """Parse a quantity string into a number of base units.
+
+        Accepts an optional leading sign followed by decimal numbers,
+        unit names, and ``*``/``/`` operators. At most one unit may
+        appear, and a number directly followed by a unit (``"500ms"``)
+        is implicit multiplication. A bare number is interpreted in the
+        target unit.
+        """
+        text = text.strip()
+        sign = 1
+        if text.startswith(("-", "+")):
+            if text[0] == "-":
+                sign = -1
+            text = text[1:].lstrip()
+        if not text:
+            raise ValueError("empty quantity")
+
+        tokens: list[tuple[str, str]] = []
+        pos = 0
+        while pos < len(text):
+            match = _QUANTITY_TOKEN.match(text, pos)
+            if not match:
+                raise ValueError(f"invalid quantity syntax near {text[pos:]!r}")
+            pos = match.end()
+            kind = match.lastgroup
+            assert kind in ("number", "unit", "op")
+            tokens.append((kind, match.group(kind)))
+
+        result: Fraction | None = None
+        pending_op: str | None = None
+        unit_seen = False
+        expect_operand = True
+        index = 0
+        while index < len(tokens):
+            kind, token = tokens[index]
+            index += 1
+            if expect_operand:
+                if kind == "number":
+                    operand = Fraction(token)
+                elif kind == "unit":
+                    if unit_seen:
+                        raise ValueError(
+                            f"at most one unit is allowed, got {token!r}"
+                        )
+                    unit_seen = True
+                    operand = self._lookup_unit(token)
+                else:
+                    raise ValueError(f"expected a number or unit, got {token!r}")
+                if pending_op is None:
+                    result = operand
+                elif pending_op == "*":
+                    assert result is not None
+                    result *= operand
+                else:
+                    assert result is not None
+                    if operand == 0:
+                        raise ValueError("division by zero")
+                    result /= operand
+                expect_operand = False
+            else:
+                if kind != "op":
+                    if kind == "unit":
+                        # Juxtaposition ("500ms") is implicit multiplication.
+                        pending_op = "*"
+                        expect_operand = True
+                        index -= 1
+                        continue
+                    raise ValueError(f"expected '*', '/', or a unit, got {token!r}")
+                pending_op = token
+                expect_operand = True
+        if expect_operand:
+            raise ValueError("quantity ends with a dangling operator")
+        assert result is not None
+        if not unit_seen:
+            # A bare number is already expressed in the target unit.
+            result *= self.dimension.units[self.unit]
+        return sign * result
+
+    def _to_target_fraction(self, value: int | float | str) -> Fraction:
+        """Convert a raw value to an exact quantity in the target unit."""
+        if isinstance(value, bool):
+            raise TypeError("must be a quantity, not bool")
+        if isinstance(value, int):
+            return Fraction(value)
+        if isinstance(value, float):
+            # Parse the decimal representation to avoid binary float
+            # artifacts (e.g. 0.1 means 1/10, not 0.1000000000000000055...).
+            return Fraction(str(value))
+        if isinstance(value, str):
+            return self._parse_expression(value) / self.dimension.units[self.unit]
+        raise TypeError(f"must be a quantity, not {type(value).__name__}")
+
+    def _round(self, quantity: Fraction) -> int:
+        """Round a target-unit quantity to an int per the rounding rule."""
+        if quantity.denominator == 1:
+            return quantity.numerator
+        if self.rounding == "exact":
+            raise ValueError(
+                f"is {quantity} {self.unit}, not a whole number; "
+                f"use a smaller unit or a rounding rule"
+            )
+        if self.rounding == "floor":
+            return quantity.numerator // quantity.denominator
+        if self.rounding == "ceil":
+            return -((-quantity.numerator) // quantity.denominator)
+        # "nearest", ties away from zero.
+        floor = quantity.numerator // quantity.denominator
+        remainder = quantity - floor
+        if remainder < Fraction(1, 2):
+            return floor
+        if remainder > Fraction(1, 2):
+            return floor + 1
+        return floor + 1 if quantity >= 0 else floor
+
+    def _evaluate(self, value: int | float | str) -> int:
+        """Convert, check, and round a raw value."""
+        quantity = self._to_target_fraction(value)
+        if quantity < 0 and not self.allow_negative:
+            raise ValueError("must not be negative")
+        if self.minimum is not None and quantity < self.minimum:
+            raise ValueError(f"must be at least {self.minimum} {self.unit}")
+        if self.maximum is not None and quantity > self.maximum:
+            raise ValueError(f"must be at most {self.maximum} {self.unit}")
+        return self._round(quantity)
+
+    def convert(self, value: object, view: ConfigView) -> int:
+        """Parse a quantity and return a whole number of the target unit."""
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            self.fail(f"must be a quantity, not {type(value).__name__}", view, True)
+        try:
+            return self._evaluate(value)
+        except ValueError as exc:
+            self.fail(str(exc), view)
+
+    def get_default_value(self, key_name: str = "default") -> int:
+        """Get the default, validated like any other quantity."""
+        if not hasattr(self, "default") or self.default is REQUIRED:
+            raise exceptions.NotFoundError(f"{key_name} not found")
+        if isinstance(self.default, bool) or not isinstance(
+            self.default, (int, float, str)
+        ):
+            raise exceptions.ConfigTemplateError(
+                f"invalid default for {key_name}: "
+                f"must be a quantity, not {type(self.default).__name__}"
+            )
+        try:
+            return self._evaluate(self.default)
+        except ValueError as exc:
+            raise exceptions.ConfigTemplateError(
+                f"invalid default for {key_name}: {exc}"
+            )
 
 
 class MappingTemplate(Template[AttrDict[ConfigKeyT, V]]):

@@ -9,9 +9,14 @@ below!
 Unreleased
 ----------
 
-..
-    New features
-    ~~~~~~~~~~~~
+New features
+~~~~~~~~~~~~
+
+- Added a ``Quantity`` template that parses values with units (such as
+  ``"500ms"`` or ``"64MiB"``) into a declared target unit using exact
+  arithmetic. It supports compound ``*``/``/`` expressions over whitelisted
+  units, dimension checking, configurable rounding rules, optional negative
+  values, and validated defaults and bounds.
 
 ..
     Bug fixes

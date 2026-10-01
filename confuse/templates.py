@@ -18,7 +18,7 @@ else:
 from . import exceptions, util
 
 if TYPE_CHECKING:
-    from .core import ConfigView, Subview
+    from .core import ConfigView, RootView, Subview
 
 
 T = TypeVar("T")
@@ -28,6 +28,14 @@ P = TypeVar("P", bound=pathlib.Path | str, default=str)
 V = TypeVar("V", default=object)
 ConfigKey = int | str | bytes
 ConfigKeyT = TypeVar("ConfigKeyT", bound=ConfigKey, default=str)
+
+
+# Sentinel pushed onto the active-reference chain whenever validation
+# starts (or restarts) through `ConfigView.get`. Entries outside the most
+# recent barrier belong to an enclosing validation attempt and must not
+# participate in cycle detection (e.g. when a OneOf retries the same view
+# against several candidate templates).
+_REF_BARRIER: tuple[object, None] = (object(), None)
 
 
 class _Required:
@@ -827,6 +835,111 @@ class Optional(Template[T | None]):
             f"Optional({self.subtemplate!r}, {self.default!r}, "
             f"allow_missing={self.allow_missing})"
         )
+
+
+class Ref(Template[T_co]):
+    """A reference to a named template registered on a configuration.
+
+    Named templates make it possible to define recursive templates
+    without building a cyclic Python object. A ``Ref`` looks up a
+    template by name when the configuration is validated, so templates
+    may refer to names that are registered later (forward references),
+    and a name may be used in its own definition to describe recursive
+    menus or trees.
+
+    Use :meth:`confuse.Configuration.add_template` to associate a name
+    with a template. The same name on different configurations refers
+    to different templates.
+    """
+
+    def __init__(self, name: str) -> None:
+        """Create a reference to the named template `name`."""
+        super().__init__()
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"Ref({self.name!r})"
+
+    @staticmethod
+    def _position_key(view: ConfigView) -> object:
+        """Build a key for the deepest data-backed position above `view`.
+
+        Recursion is only allowed to follow actual configuration data.
+        When the data runs out, all further references collapse onto the
+        same nearest existing ancestor position, so a chain of templates
+        that only references each other without entering more child data
+        is reported as a cycle instead of looping forever.
+        """
+        from .core import RootView
+
+        current: ConfigView = view
+        while not isinstance(current, RootView):
+            try:
+                current.first()
+            except exceptions.NotFoundError:
+                current = current.parent
+                continue
+            return current.name
+        # A root without any data is a fixed position that reference
+        # expansion can never escape by descending into child data.
+        try:
+            current.first()
+        except exceptions.NotFoundError:
+            return ("missing",)
+        return current.name
+
+    def value(
+        self, view: ConfigView, template: Template[T_co] | object | None = None
+    ) -> T_co:
+        """Resolve the named template and validate `view` with it."""
+        root: RootView = view.root()
+        if self.name not in root.named_templates:
+            raise exceptions.ConfigTemplateError(
+                f"no named template {self.name!r} is registered"
+            )
+        target = root.named_templates[self.name]
+
+        # Recursion is only allowed to follow actual configuration data.
+        # Each active reference is recorded together with a key for the
+        # deepest data-backed view it has reached; once the data runs out,
+        # all further references collapse onto the same ancestor position,
+        # so a chain of templates that only references each other without
+        # entering more child data is reported as a cycle.
+        #
+        # The chain lives on the root view for the duration of a single
+        # validation rather than in global state: a OneOf template, for
+        # example, revalidates the same view against sibling candidates.
+        position_key = self._position_key(view)
+        chain = root._active_refs
+
+        # Only consider references inside the most recent validation
+        # attempt. A barrier is pushed by each `ConfigView.get` call, so a
+        # OneOf retrying the same view with a different candidate does not
+        # collide with references from the enclosing attempt, while cycles
+        # inside the new attempt are still detected.
+        start = 0
+        for index in range(len(chain) - 1, -1, -1):
+            if chain[index][1] is None:
+                start = index + 1
+                break
+        for active_position, active_name in chain[start:]:
+            if active_position == position_key:
+                cycle = [
+                    other_name
+                    for other_position, other_name in chain[start:]
+                    if other_name is not None
+                ]
+                cycle.append(self.name)
+                raise exceptions.ConfigTemplateError(
+                    "named template cycle without deeper configuration data: "
+                    + " -> ".join(cycle)
+                )
+
+        chain.append((position_key, self.name))
+        try:
+            return target.value(view, self)
+        finally:
+            chain.pop()
 
 
 class TypeTemplate(Template[T]):

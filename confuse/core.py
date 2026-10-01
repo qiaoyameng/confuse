@@ -319,7 +319,20 @@ class ConfigView:
         `ConfigTypeError`) or a `NotFoundError` when the configuration
         doesn't satisfy the template.
         """
-        return templates.as_template(template).value(self, template)
+        # Start a fresh named-template validation attempt. The barrier
+        # keeps active references from an enclosing attempt (such as a
+        # OneOf retrying this view) from being mistaken for a cycle.
+        chain = self.root()._active_refs
+        chain.append(templates._REF_BARRIER)
+        try:
+            return templates.as_template(template).value(self, template)
+        finally:
+            # Remove the barrier together with anything left on the chain
+            # if validation aborted before a reference could pop itself.
+            for index in range(len(chain) - 1, -1, -1):
+                if chain[index] is templates._REF_BARRIER:
+                    del chain[index:]
+                    break
 
     # Shortcuts for common templates.
 
@@ -417,12 +430,28 @@ class RootView(ConfigView):
         self.sources: list[ConfigSource] = list(sources)
         self.name = ROOT_NAME
         self.redactions: set[tuple[ConfigKey, ...]] = set()
+        self.named_templates: dict[str, templates.Template[Any]] = {}
+        self._active_refs: list[tuple[object, str | None]] = []
 
     def add(self, value: Any) -> None:
         self.sources.append(ConfigSource.of(value))
 
     def set(self, value: Any) -> None:
         self.sources.insert(0, ConfigSource.of(value))
+
+    def add_template(self, name: str, template: object) -> None:
+        """Register a named template for use with :class:`confuse.Ref`.
+
+        Named templates may reference each other, including themselves,
+        and references are only resolved during validation, so they can
+        be registered in any order (forward references are allowed). The
+        registry is local to this configuration view hierarchy: a name
+        registered on one :class:`Configuration` is never used by
+        another one.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("template name must be a non-empty string")
+        self.named_templates[name] = templates.as_template(template)
 
     def resolve(self) -> Iterator[tuple[dict[str, Any] | list[Any], ConfigSource]]:
         return ((dict(s), s) for s in self.sources)

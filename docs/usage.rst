@@ -138,6 +138,63 @@ filename string from the configuration. And calling
 ``config['direction'].as_choice(['up', 'down'])`` will raise a
 ``ConfigValueError`` unless the ``direction`` value is either "up" or "down".
 
+Recursive and Named Templates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some configuration is naturally recursive: a menu contains submenus, a task
+has dependencies that are themselves tasks, or a folder holds bookmarks that
+may be further folders. Describing such a structure with ordinary Python
+templates would require building an object that contains itself, which is
+impossible to write in a single expression.
+
+Instead, register a named template on the configuration with
+``add_template`` and refer to it from inside another template using
+:class:`confuse.Ref`. References are only looked up when the configuration is
+validated, so they may point at templates registered later (forward
+references) or at the template that contains the reference itself:
+
+.. code-block:: python
+
+    config.add_template(
+        "node",
+        {
+            "title": str,
+            "children": confuse.Sequence(confuse.Ref("node")),
+        },
+    )
+
+    menu = config.get({"menu": confuse.Ref("node")})
+
+Validation follows the actual configuration data, descending as deep as the
+input goes. There is no need to construct a recursive Python object, and a
+type error anywhere in the tree reports its full key path, for example
+``menu.children#0.children#1.title``.
+
+Named templates may also reference each other, which is useful together with
+``OneOf`` for describing alternating node types:
+
+.. code-block:: python
+
+    entry = confuse.OneOf([confuse.Ref("url"), confuse.Ref("folder")])
+    config.add_template("url", {"url": str})
+    config.add_template(
+        "folder",
+        {
+            "title": str,
+            "bookmarks": confuse.Sequence(entry),
+        },
+    )
+
+``Optional``, default values, ``Sequence`` and ``MappingValues`` all compose
+with references. A set of templates that reference each other but never lead
+into deeper configuration data (for example, two references that loop without
+consuming any more input) is detected up front and raises a
+``ConfigTemplateError`` rather than recursing forever.
+
+Templates are registered per :class:`Configuration`, so the same name on two
+different configurations refers to independent templates and can never leak
+between them.
+
 .. _command-line-options:
 
 Command-Line Options

@@ -9,9 +9,14 @@ below!
 Unreleased
 ----------
 
-..
-    New features
-    ~~~~~~~~~~~~
+New features
+~~~~~~~~~~~~
+
+- Add named templates and forward references for describing recursive
+  configurations. Register templates with ``Configuration.add_template`` and
+  reference them from other templates using ``confuse.Ref``. Cycles of
+  templates that do not lead into deeper configuration data raise a
+  ``ConfigTemplateError`` instead of recursing indefinitely.
 
 ..
     Bug fixes

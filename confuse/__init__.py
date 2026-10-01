@@ -1,6 +1,7 @@
 """Painless YAML configuration."""
 
 from .core import *  # noqa: F403
+from .edit import *  # noqa: F403
 from .exceptions import *  # noqa: F403
 from .sources import *  # noqa: F403
 from .templates import *  # noqa: F403

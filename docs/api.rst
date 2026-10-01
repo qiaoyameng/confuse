@@ -28,6 +28,14 @@ Sources
     :private-members:
     :show-inheritance:
 
+Editing Sessions
+----------------
+
+.. automodule:: confuse.edit
+    :members:
+    :private-members:
+    :show-inheritance:
+
 Templates
 ---------
 

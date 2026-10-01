@@ -1,11 +1,13 @@
 from yaml.scanner import ScannerError
 
 __all__ = [
+    "ConfigConflictError",
     "ConfigError",
     "ConfigReadError",
     "ConfigTemplateError",
     "ConfigTypeError",
     "ConfigValueError",
+    "ConfigWriteError",
     "NotFoundError",
 ]
 
@@ -56,4 +58,36 @@ class ConfigReadError(ConfigError):
             # Generic error message uses exception's message.
             message += f": {reason}"
 
+        super().__init__(message)
+
+
+class ConfigConflictError(ConfigError):
+    """A configuration file changed on disk while it was being edited.
+
+    Raised by an editing session when the target YAML source was
+    modified externally after the session began, so persisting the
+    session's changes would risk clobbering the other modification.
+    """
+
+    def __init__(self, filename: str | None) -> None:
+        self.filename = filename
+        if filename:
+            message = f"{filename} changed on disk during the editing session"
+        else:
+            message = "configuration source changed during the editing session"
+        super().__init__(message)
+
+
+class ConfigWriteError(ConfigError):
+    """A configuration file could not be written atomically.
+
+    The original file is left untouched when this is raised.
+    """
+
+    def __init__(self, filename: str, reason: Exception | None = None) -> None:
+        self.filename = filename
+        self.reason = reason
+        message = f"{filename} could not be written"
+        if reason:
+            message += f": {reason}"
         super().__init__(message)

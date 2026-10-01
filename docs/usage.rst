@@ -519,3 +519,86 @@ Then flatten or dump the configuration like so:
     config.dump(redact=True)
 
 The resulting YAML will contain "key: REDACTED" instead of the original data.
+
+Editing Sessions
+----------------
+
+Calling ``config.dump()`` serializes the *merged* view, so persisting its
+output into the user configuration file tends to copy default values and
+environment overrides into a file the user did not actually write. When you
+need an interactive editor around a single writable YAML file, use an
+**editing session** instead::
+
+    session = config.edit()
+
+A session targets exactly one :class:`~confuse.sources.YamlSource` (by
+default, the highest-priority non-default source, i.e. the user
+``config.yaml``). Edits made through :meth:`~confuse.EditSession.set` and
+:meth:`~confuse.EditSession.delete` are staged in memory; when you call
+:meth:`~confuse.EditSession.save`, only the paths you explicitly touched are
+merged back into that one file. Defaults and environment variables are never
+written into it.
+
+Each modification returns a :class:`~confuse.PathStatus` that explains whether
+the change will actually take effect. A change is *shadowed* when a
+higher-priority source (such as an environment variable) still wins for the
+same path; the file is updated, but the running value does not change.
+
+Deleting a path removes it from the target source only. If a lower-priority
+source defines the same path, that value shows through; deleting is never a
+request to remove a value from every source.
+
+The file is snapshotted when the session begins. If it changes on disk
+before ``save()``, a :class:`~confuse.ConfigConflictError` is raised and
+nothing is written. Writes are atomic, so a :class:`~confuse.ConfigWriteError`
+likewise leaves the original file untouched (and the staged changes remain
+available to retry).
+
+Here is a three-layer example. Given a package default file, a user file,
+and an environment overlay::
+
+    # config_default.yaml
+    server:
+        host: localhost
+        port: 8080
+
+    # config.yaml
+    server:
+        host: myhost
+
+    # environment
+    APP_SERVER__PORT=9000
+
+the effective values before editing are::
+
+    >>> config["server"].flatten()
+    {'port': 9000, 'host': 'myhost'}
+
+    >>> session = config.edit()
+    >>> session.set(("server", "timeout"), 30).describe()
+    'server.timeout will take effect as 30'
+    >>> session.set(("server", "port"), 7000).describe()
+    ("server.port will be written as 7000, but a higher-priority source "
+     "(environment variables (APP_)) keeps 9000 in effect")
+    >>> session.delete(("server", "host")).describe()
+    "server.host removed here; the lower-priority value 'localhost' is now effective"
+    >>> result = session.save()
+    >>> result.shadowed
+    [('server', 'port')]
+    >>> result.revealed
+    [('server', 'host')]
+
+After saving, ``config.yaml`` contains only the paths the user touched
+(defaults and environment values are absent)::
+
+    server:
+        port: 7000
+        timeout: 30
+
+and the effective values become::
+
+    >>> config["server"].flatten()
+    {'port': 9000, 'timeout': 30, 'host': 'localhost'}
+
+Sessions also work as context managers that save on clean exit and discard
+the staged edits if the body raises.

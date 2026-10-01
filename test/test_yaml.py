@@ -49,6 +49,17 @@ class FileParseTest(unittest.TestCase):
             assert config["foo"].get() == "bar2"
             assert config["test"].get() == "hello world"
 
+    def test_reload_removes_deleted_keys(self):
+        with TempDir() as temp:
+            path = temp.sub("test_config.yaml", b"foo: bar\nbaz: qux")
+            config = confuse.Configuration("test", __name__)
+            config.set_file(filename=path)
+            assert config["baz"].get() == "qux"
+            temp.sub("test_config.yaml", b"foo: bar2")
+            config.reload()
+            assert config["foo"].get() == "bar2"
+            assert not config["baz"].exists()
+
     def test_tab_indentation_error(self):
         with pytest.raises(confuse.ConfigError, match="found tab"):
             self._parse_contents(b"foo:\n\tbar: baz")

@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from optparse import Values
     from pathlib import Path
 
+    from .edit import EditSession
     from .templates import ConfigKey
 
 CONFIG_FILENAME = "config.yaml"
@@ -433,6 +434,28 @@ class RootView(ConfigView):
         """
         del self.sources[:]
         self.redactions.clear()
+
+    def edit(
+        self,
+        *,
+        source: YamlSource | None = None,
+        filename: str | Path | os.PathLike[str] | None = None,
+    ) -> EditSession:
+        """Open an editing session on a single writable YAML source.
+
+        By default, the session targets the highest-priority
+        non-default :class:`YamlSource` (usually the user
+        configuration file). Pass *source* or *filename* to target a
+        specific source.
+
+        The session stages changes in memory and, on save, writes only
+        the explicitly modified paths back into that one file; default
+        values and environment-variable overlays are never copied into
+        it. See :class:`confuse.EditSession` for details.
+        """
+        from .edit import EditSession
+
+        return EditSession(self, source=source, filename=filename)
 
     def root(self) -> Self:
         return self

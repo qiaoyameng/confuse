@@ -9,13 +9,22 @@ below!
 Unreleased
 ----------
 
-..
-    New features
-    ~~~~~~~~~~~~
+New features
+~~~~~~~~~~~~
 
-..
-    Bug fixes
-    ~~~~~~~~~
+* Add :class:`confuse.EditSession`, opened via ``config.edit()``, for
+  editing a single writable YAML source. Only explicitly modified paths
+  are written back to the file (defaults and environment overlays are
+  not copied in), deletions reveal lower-priority values, and each
+  change reports whether it is shadowed by a higher-priority source.
+  Sessions detect on-disk conflicts and write atomically so failures
+  preserve the original file.
+
+Bug fixes
+~~~~~~~~~
+
+* Reloading YAML sources now drops keys removed from the file instead
+  of leaving stale values merged into the source.
 
 ..
     For plugin developers
